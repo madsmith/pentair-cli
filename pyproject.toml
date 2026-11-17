@@ -24,7 +24,7 @@ dev = [
 ]
 
 [project.scripts]
-pentair = "pentair_cli.__main__:main"
+pentair-cli = "pentair_cli.__main__:main"
 
 [project.urls]
 Homepage = "https://github.com/yourorg/pentair-cli"
@@ -40,7 +40,7 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/pentair_cli"]
 
-# Ship the agent skill inside the wheel so `pentair skill install` works
+# Ship the agent skill inside the wheel so `pentair-cli skill install` works
 # from a `uv tool install`ed copy.
 [tool.hatch.build.targets.wheel.force-include]
 "skill" = "pentair_cli/_skill"

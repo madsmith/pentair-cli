@@ -20,7 +20,7 @@ def to_jsonable(obj: Any) -> Any:
 
 
 def render_json(obj: Any) -> str:
-    return json.dumps(to_jsonable(obj), indent=2, default=str)
+    return json.dumps(to_jsonable(obj), indent=2, default=str, ensure_ascii=False)
 
 
 def fmt(value: Any) -> str:

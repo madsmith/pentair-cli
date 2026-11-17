@@ -3,7 +3,7 @@
 Each module exposes:
 
 * ``read_*`` / ``apply_*`` functions that take an already-connected controller
-  (so several reads can share one connection, e.g. ``pentair status``), and
+  (so several reads can share one connection, e.g. ``pentair-cli status``), and
 * ``get_*`` / ``set_*`` wrappers that take an ``IntelliCenterClient`` and open
   their own session — the same shape as the pentair-mcp ``tools`` package.
 """

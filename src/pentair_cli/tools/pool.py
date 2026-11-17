@@ -23,7 +23,7 @@ def read_pool_status(controller: Any) -> PoolStatus:
         pump_speed = None
     return PoolStatus(
         **body_fields(controller, pool),
-        pump_speed=int(pump_speed) if pump_speed is not None else None,
+        pump_rpm=int(pump_speed) if pump_speed is not None else None,
     )
 
 

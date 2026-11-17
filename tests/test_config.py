@@ -9,8 +9,6 @@ from pentair_cli.config import (
     load_settings,
     read_config_file,
     resolve_config_path,
-    set_config_value,
-    unset_config_value,
 )
 
 
@@ -68,22 +66,3 @@ def test_invalid_toml(tmp_path):
     path.write_text("host = \n")
     with pytest.raises(ConfigError, match="Invalid TOML"):
         load_settings(config_path=path)
-
-
-def test_set_and_unset_roundtrip(tmp_path):
-    path = tmp_path / "sub" / "c.toml"
-    assert set_config_value(path, "port", "7000") == 7000
-    assert set_config_value(path, "host", 'we"ird') == 'we"ird'
-    assert read_config_file(path) == {"host": 'we"ird', "port": 7000}
-    assert unset_config_value(path, "port") is True
-    assert unset_config_value(path, "port") is False
-    assert read_config_file(path) == {"host": 'we"ird'}
-
-
-def test_set_rejects_bad_key_and_value(tmp_path):
-    path = tmp_path / "c.toml"
-    with pytest.raises(ConfigError, match="Unknown setting"):
-        set_config_value(path, "nope", "1")
-    with pytest.raises(ConfigError, match="Invalid value"):
-        set_config_value(path, "port", "99999")
-    assert not path.exists()

@@ -24,13 +24,25 @@ def find_body(controller: Any, name: str) -> Any:
     return resolve(controller.get_bodies(), name, "body")
 
 
+def heat_mode_name(mode: HeaterType | None) -> str | None:
+    """HeaterType.SOLAR_PREFERRED -> "Solar Preferred"."""
+    if mode is None:
+        return None
+    return mode.name.replace("_", " ").title().replace("Ultra Temp", "UltraTemp")
+
+
 def body_fields(controller: Any, body: Any) -> dict[str, Any]:
+    mode = controller.get_body_heat_mode(body.objnam)
+    heater = None if mode == HeaterType.OFF else controller.get_heater_for_body(body.objnam)
     return {
-        "body": body.objnam,
+        "id": body.objnam,
         "name": getattr(body, "sname", None),
         "temperature": controller.get_body_temperature(body.objnam),
         "setpoint": controller.get_body_heating_setpoint(body.objnam),
-        "heater_on": bool(controller.is_body_heating(body.objnam)),
+        "heat_mode": heat_mode_name(mode),
+        "heat_source": getattr(heater, "sname", None) if heater else None,
+        "heat_source_id": heater.objnam if heater else None,
+        "heating": bool(controller.is_body_heating(body.objnam)),
         "unit": system_unit(controller),
     }
 
@@ -81,11 +93,12 @@ async def apply_body_setpoint(
         if new_setpoint == temperature_int:
             break
     return SetpointResult(
-        body=body.objnam,
-        temperature=temperature_int,
+        id=body.objnam,
+        name=getattr(body, "sname", None),
+        setpoint=temperature_int,
         unit=sys_unit,
         requested=temperature,
         requested_unit=requested_unit,
-        verified_setpoint=new_setpoint,
-        verified=new_setpoint == temperature_int,
+        confirmed=new_setpoint == temperature_int,
+        reported_setpoint=new_setpoint,
     )

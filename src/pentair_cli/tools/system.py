@@ -5,7 +5,8 @@ from __future__ import annotations
 from typing import Any
 
 from pentair_cli.client import IntelliCenterClient
-from pentair_cli.models.schemas import ModelSummary, ObjectRef, Overview, SystemInfo
+from pentair_cli.models.schemas import ModelSummary, Overview, SystemInfo
+from pentair_cli.models.vocabulary import kind_label, on_state
 from pentair_cli.tools import NotFoundError
 from pentair_cli.tools.common import object_ref
 
@@ -14,11 +15,12 @@ def read_system_info(controller: Any) -> SystemInfo:
     sys_info = controller.system_info
     if not sys_info:
         raise RuntimeError("System info not available")
+    uses_metric = getattr(sys_info, "uses_metric", None)
     return SystemInfo(
-        prop_name=getattr(sys_info, "prop_name", None),
-        sw_version=getattr(sys_info, "sw_version", None),
-        uses_metric=getattr(sys_info, "uses_metric", None),
-        objnam=getattr(sys_info, "objnam", None),
+        name=getattr(sys_info, "prop_name", None),
+        firmware=getattr(sys_info, "sw_version", None),
+        unit=None if uses_metric is None else ("C" if uses_metric else "F"),
+        id=getattr(sys_info, "objnam", None),
         unique_id=getattr(sys_info, "unique_id", None),
     )
 
@@ -26,15 +28,14 @@ def read_system_info(controller: Any) -> SystemInfo:
 def read_model_summary(controller: Any) -> ModelSummary:
     counts: dict[str, int] = {}
     for obj in controller.model.objects.values():
-        t = getattr(obj, "objtype", None) or type(obj).__name__
-        counts[t] = counts.get(t, 0) + 1
-    return ModelSummary(
-        num_objects=controller.model.num_objects, object_types=dict(sorted(counts.items()))
-    )
+        k = kind_label(getattr(obj, "objtype", None), plural=True) or "unknown"
+        counts[k] = counts.get(k, 0) + 1
+    return ModelSummary(total=controller.model.num_objects, by_kind=dict(sorted(counts.items())))
 
 
 def read_overview(controller: Any) -> Overview:
     """Everything an operator usually wants, from a single connection."""
+    from pentair_cli.tools.entities import user_circuits
     from pentair_cli.tools.pool import read_pool_status
     from pentair_cli.tools.spa import read_spa_status
 
@@ -44,16 +45,13 @@ def read_overview(controller: Any) -> Overview:
         except (NotFoundError, RuntimeError):
             return None
 
-    circuits_on: list[ObjectRef] = [
-        object_ref(c)
-        for c in controller.get_circuits()
-        if getattr(c, "status", None) == getattr(c, "on_status", "ON")
-    ]
     return Overview(
         system=attempt(read_system_info),
         pool=attempt(read_pool_status),
         spa=attempt(read_spa_status),
-        circuits_on=circuits_on,
+        circuits_on=[
+            object_ref(c) for c in user_circuits(controller) if on_state(getattr(c, "status", None))
+        ],
     )
 
 

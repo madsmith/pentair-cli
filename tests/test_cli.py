@@ -18,10 +18,10 @@ def runner() -> CliRunner:
 
 
 def invoke(runner, *args, **kw):
-    return runner.invoke(cli, list(args), prog_name="pentair", catch_exceptions=False, **kw)
+    return runner.invoke(cli, list(args), prog_name="pentair-cli", catch_exceptions=False, **kw)
 
 
-@pytest.mark.parametrize("args", [[], ["pool"], ["config"], ["entity"]])
+@pytest.mark.parametrize("args", [[], ["pool"], ["light"], ["entity"]])
 def test_bare_groups_show_help_exit_zero(runner, args):
     r = invoke(runner, *args)
     assert r.exit_code == 0
@@ -30,7 +30,7 @@ def test_bare_groups_show_help_exit_zero(runner, args):
 
 def test_version(runner):
     r = invoke(runner, "--version")
-    assert r.output.strip() == f"pentair {__version__}"
+    assert r.output.strip() == f"pentair-cli {__version__}"
     data = json.loads(invoke(runner, "version", "--json").output)
     assert data["pentair_cli"] == __version__ and data["pyintellicenter"]
 
@@ -38,8 +38,8 @@ def test_version(runner):
 def test_commands_tree_json(runner):
     tree = json.loads(invoke(runner, "commands", "--json").output)
     cmds = {t["command"]: t for t in tree}
-    assert "pentair spa set-temp" in cmds
-    unit = next(p for p in cmds["pentair spa set-temp"]["params"] if p["name"] == "--unit")
+    assert "pentair-cli spa set-temp" in cmds
+    unit = next(p for p in cmds["pentair-cli spa set-temp"]["params"] if p["name"] == "--unit")
     assert unit["choices"] == ["F", "C"]
 
 
@@ -47,13 +47,53 @@ def test_commands_tree_json(runner):
 def test_json_flag_anywhere(runner, fake_client, pos):
     args = ["--json", "spa", "status"] if pos == "before" else ["spa", "status", "--json"]
     data = json.loads(invoke(runner, *args).output)
-    assert data["body"] == "B1202" and data["unit"] == "F"
+    assert data["id"] == "B1202" and data["unit"] == "F"
 
 
 def test_text_status(runner, fake_client):
     r = invoke(runner, "status")
     assert r.exit_code == 0
     assert "Pool (B1101)" in r.output and "56°F" in r.output and "Circuits on: Spa" in r.output
+    assert "Heat mode    Heater" in r.output
+    assert "Heat source  Gas Heater (H0001)" in r.output
+    assert "Heating      No" in r.output
+
+
+def test_text_status_heating_yes(runner, fake_client, controller):
+    controller.heating["B1101"] = True
+    assert "Heating      Yes" in invoke(runner, "pool", "status").output
+
+
+def test_circuit_list_text(runner, fake_client):
+    out = invoke(runner, "circuit", "list").output
+    assert out.splitlines()[0].split() == ["NAME", "ID", "TYPE", "STATE"]
+    assert "X0043" not in out
+    assert "Cleaner     C0015  Generic" in out
+    assert "X0043" in invoke(runner, "circuit", "list", "--all").output
+
+
+def test_no_intellicenter_field_names_in_json(runner, fake_client):
+    leaked = {"objnam", "sname", "subtype", "status", "prop_name", "sw_version", "uses_metric"}
+    for args in (
+        ["status"],
+        ["circuit", "list"],
+        ["light", "list"],
+        ["body", "list"],
+        ["system", "info"],
+        ["entity", "list"],
+    ):
+        text = invoke(runner, *args, "--json").output
+        keys = set()
+
+        def walk(o):
+            if isinstance(o, dict):
+                keys.update(o)
+                [walk(v) for v in o.values()]
+            elif isinstance(o, list):
+                [walk(v) for v in o]
+
+        walk(json.loads(text))
+        assert not keys & leaked, (args, keys & leaked)
 
 
 def test_host_option_reaches_client(runner, monkeypatch, controller, no_sleep):
@@ -71,23 +111,24 @@ def test_host_option_reaches_client(runner, monkeypatch, controller, no_sleep):
 
 def test_set_temp(runner, fake_client, controller):
     data = json.loads(invoke(runner, "spa", "set-temp", "100", "--json").output)
-    assert data["ok"] and data["verified"] and data["temperature"] == 100
+    assert data["ok"] and data["confirmed"] and data["setpoint"] == 100
 
 
 def test_ambiguous_name_exit_4(runner, fake_client, controller):
-    r = invoke(runner, "circuit", "on", "Cleaner", "--json")
+    r = invoke(runner, "circuit", "on", "Step Light", "--json")
     assert r.exit_code == 4
     assert json.loads(r.output)["kind"] == "ambiguous"
     assert controller.calls == []
 
 
-def test_connection_error_exit_3(runner, fake_client):
+def test_connection_error_exit_3(runner, fake_client, tmp_path):
+    config_file = tmp_path / "xdg" / "pentair-cli" / "config.toml"
     fake_client["client"] = FakeClient(error=ConnectionError("Timed out"))
     r = invoke(runner, "status", "--json")
     assert r.exit_code == 3
     assert json.loads(r.output) == {
         "ok": False,
-        "error": "Timed out (configure with --host or `pentair config set host <ip>`)",
+        "error": f"Timed out (set --host, INTELLICENTER_HOST, or `host` in {config_file})",
         "kind": "connection",
     }
 
@@ -100,16 +141,22 @@ def test_bad_effect_fails_before_connecting(runner, monkeypatch):
     assert r.exit_code == 4 and "Valid effects" in r.stderr
 
 
-def test_config_flow(runner, tmp_path):
+def test_no_config_command(runner):
+    assert invoke(runner, "config").exit_code == 2
+
+
+def test_config_file_is_read(runner, monkeypatch, tmp_path, controller, no_sleep):
+    seen = {}
+
+    def factory(**kw):
+        seen.update(kw)
+        return FakeClient(controller)
+
+    monkeypatch.setattr("pentair_cli.cli.IntelliCenterClient", factory)
     path = tmp_path / "c.toml"
-    assert (
-        invoke(runner, "--config", str(path), "config", "init", "--host", "10.0.0.5").exit_code == 0
-    )
-    assert invoke(runner, "--config", str(path), "config", "init").exit_code == 5
-    invoke(runner, "--config", str(path), "config", "set", "port", "7000")
-    data = json.loads(invoke(runner, "--config", str(path), "config", "show", "--json").output)
-    assert data["settings"]["host"] == "10.0.0.5" and data["settings"]["port"] == 7000
-    assert data["sources"]["port"].startswith("file:")
+    path.write_text('host = "10.0.0.5"\nport = 7000\n')
+    invoke(runner, "--config", str(path), "spa", "status")
+    assert (seen["host"], seen["port"]) == ("10.0.0.5", 7000)
 
 
 def test_invalid_env_exit_5(runner, monkeypatch):

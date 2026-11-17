@@ -10,7 +10,6 @@ Values are resolved in this order (highest priority first):
 
 from __future__ import annotations
 
-import json
 import os
 import tomllib
 from collections.abc import Mapping
@@ -117,52 +116,3 @@ def load_settings(
     return LoadedSettings(
         settings=settings, config_path=path, config_exists=path.is_file(), sources=sources
     )
-
-
-def _toml_value(value: Any) -> str:
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, int | float):
-        return repr(value)
-    # JSON string escaping is a valid subset of TOML basic strings.
-    return json.dumps(str(value))
-
-
-def write_config_file(path: Path, values: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lines = [
-        "# pentair-cli settings",
-        "# Precedence: CLI options > INTELLICENTER_* env > this file",
-        "",
-    ]
-    for key in SETTING_KEYS:
-        if key in values:
-            lines.append(f"{key} = {_toml_value(values[key])}")
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
-def set_config_value(path: Path, key: str, raw_value: str) -> Any:
-    """Validate and persist a single key; returns the coerced value."""
-    if key not in SETTING_KEYS:
-        raise ConfigError(f"Unknown setting '{key}'. Valid keys: {', '.join(SETTING_KEYS)}")
-    current = read_config_file(path)
-    current[key] = raw_value
-    try:
-        validated = Settings(**current)
-    except ValidationError as e:
-        raise ConfigError(f"Invalid value for {key}: {e.errors()[0]['msg']}") from e
-    coerced = getattr(validated, key)
-    current[key] = coerced
-    write_config_file(path, current)
-    return coerced
-
-
-def unset_config_value(path: Path, key: str) -> bool:
-    if key not in SETTING_KEYS:
-        raise ConfigError(f"Unknown setting '{key}'. Valid keys: {', '.join(SETTING_KEYS)}")
-    current = read_config_file(path)
-    if key not in current:
-        return False
-    del current[key]
-    write_config_file(path, current)
-    return True

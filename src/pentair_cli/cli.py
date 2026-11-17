@@ -1,7 +1,7 @@
 """Command line interface for Pentair IntelliCenter.
 
-Discovery is progressive: running ``pentair`` or any command group without a
-subcommand prints that level's help (exit 0). ``pentair commands`` prints the
+Discovery is progressive: running ``pentair-cli`` or any command group without a
+subcommand prints that level's help (exit 0). ``pentair-cli commands`` prints the
 whole tree; add ``--json`` for a machine-readable version.
 """
 
@@ -21,15 +21,9 @@ from pentair_cli.client import IntelliCenterClient
 from pentair_cli.config import (
     CONFIG_PATH_ENV,
     ENV_PREFIX,
-    SETTING_KEYS,
     ConfigError,
     LoadedSettings,
-    Settings,
     load_settings,
-    resolve_config_path,
-    set_config_value,
-    unset_config_value,
-    write_config_file,
 )
 from pentair_cli.tools import AmbiguousNameError, NotFoundError, entities, pool, spa, system
 from pentair_cli.utils import output
@@ -137,7 +131,11 @@ def emit(result: Any, render: Callable[[Any], str]) -> None:
 
 def fail(message: str, code: int = EXIT_ERROR, kind: str = "error") -> NoReturn:
     if _state().json:
-        click.echo(jsonlib.dumps({"ok": False, "error": message, "kind": kind}, indent=2))
+        click.echo(
+            jsonlib.dumps(
+                {"ok": False, "error": message, "kind": kind}, indent=2, ensure_ascii=False
+            )
+        )
     else:
         click.secho(f"error: {message}", fg="red", err=True)
     sys.exit(code)
@@ -161,7 +159,7 @@ def run[T](fn: Callable[[IntelliCenterClient], Awaitable[T]], render: Callable[[
         result = asyncio.run(fn(client))
     except ConnectionError as e:
         fail(
-            f"{e} (configure with --host or `pentair config set host <ip>`)",
+            f"{e} (set --host, {ENV_PREFIX}HOST, or `host` in {loaded.config_path})",
             EXIT_CONNECTION,
             "connection",
         )
@@ -201,9 +199,9 @@ class OrderedGroup(click.Group):
 ROOT_EPILOG = f"""
 \b
 Start here:
-  pentair status            overview of pool, spa and active circuits
-  pentair <group>           show the commands in a group
-  pentair commands          full command tree (add --json for agents)
+  pentair-cli status        overview of pool, spa and active circuits
+  pentair-cli <group>       show the commands in a group
+  pentair-cli commands      full command tree (add --json for agents)
 
 \b
 Settings precedence: options > {ENV_PREFIX}* env vars > config file > defaults.
@@ -214,7 +212,7 @@ Exit codes: 0 ok, 1 error, 2 usage, 3 connection, 4 not found, 5 config.
 
 @click.group(cls=OrderedGroup, epilog=ROOT_EPILOG)
 @click.version_option(
-    __version__, "-V", "--version", prog_name="pentair", message="%(prog)s %(version)s"
+    __version__, "-V", "--version", prog_name="pentair-cli", message="%(prog)s %(version)s"
 )
 @json_option
 @connection_options
@@ -237,30 +235,52 @@ def cli() -> None:
     """Control a Pentair IntelliCenter pool & spa system."""
 
 
+# --------------------------------------------------------------------------- rendering
+
+
+def _state_label(on: bool | None) -> str:
+    return "-" if on is None else ("On" if on else "Off")
+
+
+def _ref_row(r: Any, **extra: Any) -> dict[str, Any]:
+    return {"name": r.name, "id": r.id, "type": r.type, "state": _state_label(r.on), **extra}
+
+
+def _ref_table(rows: list[Any]) -> str:
+    return output.table([_ref_row(r) for r in rows], ("name", "id", "type", "state"))
+
+
+def _label(name: str | None, id_: str) -> str:
+    return f"{name} ({id_})" if name else id_
+
+
 # --------------------------------------------------------------------------- status
 
 
 def _render_body(title: str, st: Any) -> str:
     rows: dict[str, Any] = {
-        "temperature": output.temp(st.temperature, st.unit),
-        "setpoint": output.temp(st.setpoint, st.unit),
-        "heater": "on" if st.heater_on else "off",
+        "Temperature": output.temp(st.temperature, st.unit),
+        "Setpoint": output.temp(st.setpoint, st.unit),
+        "Heat mode": st.heat_mode or "-",
+        "Heat source": _label(st.heat_source, st.heat_source_id) if st.heat_source_id else "None",
+        "Heating": "Yes" if st.heating else "No",
     }
-    if getattr(st, "pump_speed", None) is not None:
-        rows["pump"] = f"{st.pump_speed} rpm"
-    return output.kv(rows, title=f"{title} ({st.body})")
+    if getattr(st, "pump_rpm", None) is not None:
+        rows["Pump"] = f"{st.pump_rpm} rpm"
+    return output.kv(rows, title=f"{title} ({st.id})")
 
 
 def _render_overview(ov: Any) -> str:
     parts = []
     if ov.system:
-        name = ov.system.prop_name or "IntelliCenter"
-        parts.append(f"{name}  (firmware {output.fmt(ov.system.sw_version)})")
+        parts.append(
+            f"{ov.system.name or 'IntelliCenter'}  (firmware {output.fmt(ov.system.firmware)})"
+        )
     if ov.pool:
         parts.append(_render_body("Pool", ov.pool))
     if ov.spa:
         parts.append(_render_body("Spa", ov.spa))
-    on = ", ".join(c.sname or c.objnam for c in ov.circuits_on) or "none"
+    on = ", ".join(c.name or c.id for c in ov.circuits_on) or "none"
     parts.append(f"Circuits on: {on}")
     return "\n\n".join(parts)
 
@@ -276,15 +296,13 @@ def status() -> None:
 
 
 def _render_setpoint(r: Any) -> str:
-    line = f"Set {r.body} setpoint to {r.temperature}°{r.unit}"
+    line = f"{_label(r.name, r.id)} setpoint set to {r.setpoint}°{r.unit}"
     if r.requested_unit != r.unit:
         line += f" (requested {output.fmt(r.requested)}°{r.requested_unit})"
-    if r.verified:
+    if r.confirmed:
         return line + " — confirmed by controller."
-    return (
-        line
-        + f" — not yet confirmed (controller reports {output.temp(r.verified_setpoint, r.unit)})."
-    )
+    reported = output.temp(r.reported_setpoint, r.unit)
+    return line + f" — not yet confirmed (controller still reports {reported})."
 
 
 UNIT_OPTION = click.option(
@@ -299,19 +317,20 @@ def _body_group(name: str, label: str, get_status: Any, set_point: Any) -> click
     def grp() -> None:
         pass
 
-    grp.help = f"{label} temperature and heater."
+    grp.help = f"{label} temperature and heating."
 
     @grp.command("status")
     @device_command
     def _status() -> None:
         run(get_status, lambda st: _render_body(label, st))
 
-    _status.help = f"Show {label.lower()} temperature, setpoint and heater state."
+    _status.help = f"Show {label.lower()} temperature, setpoint, heat mode/source and heating."
 
     @grp.command(
         "set-temp",
         epilog=(
-            f"\b\nExamples:\n  pentair {name} set-temp 84\n  pentair {name} set-temp 29 --unit C"
+            f"\b\nExamples:\n  pentair-cli {name} set-temp 84\n"
+            f"  pentair-cli {name} set-temp 29 --unit C"
         ),
     )
     @click.argument("temperature", type=float)
@@ -320,7 +339,7 @@ def _body_group(name: str, label: str, get_status: Any, set_point: Any) -> click
     def _set_temp(temperature: float, unit: str | None) -> None:
         run(lambda c: set_point(c, temperature, unit), _render_setpoint)
 
-    _set_temp.help = f"Set the {label.lower()} heating setpoint (also enables the heater)."
+    _set_temp.help = f"Set the {label.lower()} heating setpoint (also sets heat mode to Heater)."
     return grp
 
 
@@ -331,38 +350,36 @@ _body_group("spa", "Spa", spa.get_spa_status, spa.set_spa_setpoint)
 # --------------------------------------------------------------------------- circuits
 
 
-REF_COLUMNS = ("sname", "objnam", "type", "subtype", "status")
-
-
 @cli.group(cls=OrderedGroup)
 def circuit() -> None:
     """Circuits (pumps, features, lights) on/off."""
 
 
 @circuit.command("list")
+@click.option("--all", "include_system", is_flag=True, help="Include virtual and system circuits.")
 @device_command
-def circuit_list() -> None:
-    """List circuits with their current status."""
-    run(entities.list_circuits, lambda rows: output.table(rows, REF_COLUMNS))
+def circuit_list(include_system: bool) -> None:
+    """List circuits and whether they are on."""
+    run(lambda c: entities.list_circuits(c, include_system), _ref_table)
 
 
 def _render_circuit_state(r: Any) -> str:
-    return f"{r.resolved_objnam} ({r.objnam}) turned {'on' if r.state else 'off'}."
+    return f"{_label(r.name, r.id)} turned {'on' if r.on else 'off'}."
 
 
-@circuit.command("on", epilog="\b\nExample:\n  pentair circuit on 'Pool Light'")
+@circuit.command("on", epilog="\b\nExample:\n  pentair-cli circuit on 'Pool Light'")
 @click.argument("name")
 @device_command
 def circuit_on(name: str) -> None:
-    """Turn circuit NAME (sname or objnam) on."""
+    """Turn circuit NAME (name or ID) on."""
     run(lambda c: entities.set_circuit_state(c, name, True), _render_circuit_state)
 
 
-@circuit.command("off", epilog="\b\nExample:\n  pentair circuit off C0003")
+@circuit.command("off", epilog="\b\nExample:\n  pentair-cli circuit off C0003")
 @click.argument("name")
 @device_command
 def circuit_off(name: str) -> None:
-    """Turn circuit NAME (sname or objnam) off."""
+    """Turn circuit NAME (name or ID) off."""
     run(lambda c: entities.set_circuit_state(c, name, False), _render_circuit_state)
 
 
@@ -377,36 +394,41 @@ def light() -> None:
 @light.command("list")
 @device_command
 def light_list() -> None:
-    """List lights and light shows."""
-    run(entities.list_lights, lambda rows: output.table(rows, REF_COLUMNS))
+    """List lights, whether they are on, and their color effect."""
+    run(
+        entities.list_lights,
+        lambda rows: output.table(
+            [_ref_row(r, effect=r.effect) for r in rows], ("name", "id", "type", "state", "effect")
+        ),
+    )
 
 
 @light.command("effects")
 @json_option
 def light_effects() -> None:
     """List the color effects accepted by `light set-effect`."""
-    emit(entities.available_light_effects(), lambda rows: output.table(rows, ("code", "name")))
+    emit(entities.available_light_effects(), lambda rows: output.table(rows, ("name", "code")))
 
 
 @light.command(
     "set-effect",
     epilog=(
-        "\b\nExamples:\n  pentair light set-effect 'Pool Light' PARTY\n"
-        "  pentair light set-effect C0009 caribbean"
+        "\b\nExamples:\n  pentair-cli light set-effect 'Pool Lights' 'Party Mode'\n"
+        "  pentair-cli light set-effect C0009 caribbean"
     ),
 )
 @click.argument("name")
 @click.argument("effect")
 @device_command
 def light_set_effect(name: str, effect: str) -> None:
-    """Set light NAME to EFFECT (code or name; see `pentair light effects`)."""
+    """Set light NAME to EFFECT (name or code; see `pentair-cli light effects`)."""
     try:
         entities.resolve_effect(effect)  # validate before connecting
     except NotFoundError as e:
         fail(str(e), EXIT_NOT_FOUND, "not_found")
     run(
         lambda c: entities.set_light_effect(c, name, effect),
-        lambda r: f"{r.resolved_objnam} set to {r.effect_name} ({r.effect}).",
+        lambda r: f"{_label(r.name, r.id)} set to {r.effect}.",
     )
 
 
@@ -415,24 +437,32 @@ def light_set_effect(name: str, effect: str) -> None:
 
 @cli.group(name="system", cls=OrderedGroup)
 def system_group() -> None:
-    """Controller information and object model."""
+    """Controller information and object counts."""
 
 
 @system_group.command("info")
 @device_command
 def system_info() -> None:
-    """Controller name, firmware, units and IDs."""
-    run(system.get_system_info, output.kv)
+    """Controller name, firmware, temperature unit and IDs."""
+    run(
+        system.get_system_info,
+        lambda i: output.kv(
+            {
+                "Name": i.name,
+                "Firmware": i.firmware,
+                "Unit": f"°{i.unit}" if i.unit else None,
+                "ID": i.id,
+                "Unique ID": i.unique_id,
+            }
+        ),
+    )
 
 
 @system_group.command("summary")
 @device_command
 def system_summary() -> None:
-    """Count of objects in the controller model, by type."""
-    run(
-        system.get_model_summary,
-        lambda s: output.kv(s.object_types, title=f"{s.num_objects} objects"),
-    )
+    """Number of controller objects, by kind."""
+    run(system.get_model_summary, lambda s: output.kv(s.by_kind, title=f"{s.total} objects"))
 
 
 @cli.group(cls=OrderedGroup)
@@ -444,23 +474,21 @@ def body() -> None:
 @device_command
 def body_list() -> None:
     """List bodies of water."""
-    run(entities.list_bodies, lambda rows: output.table(rows, REF_COLUMNS))
+    run(entities.list_bodies, _ref_table)
 
 
 @cli.group(cls=OrderedGroup)
 def entity() -> None:
-    """Any controller object: list by kind, inspect by name."""
+    """Any controller object: list by kind, inspect by name or ID."""
 
 
 def _render_entities(groups: dict[str, list[Any]]) -> str:
-    return (
-        "\n\n".join(
-            f"{kind} ({len(rows)})\n{output.table(rows, REF_COLUMNS)}"
-            for kind, rows in groups.items()
-            if rows
-        )
-        or "(none)"
-    )
+    sections = [
+        f"{kind.replace('_', ' ').capitalize()} ({len(rows)})\n{_ref_table(rows)}"
+        for kind, rows in groups.items()
+        if rows
+    ]
+    return "\n\n".join(sections) or "(none)"
 
 
 @entity.command(
@@ -478,115 +506,26 @@ def entity_list(kind: str | None) -> None:
     run(lambda c: entities.list_entities(c, kind), _render_entities)
 
 
-@entity.command("get", epilog="\b\nExample:\n  pentair entity get B1101")
+@entity.command("get", epilog="\b\nExample:\n  pentair-cli entity get B1101")
 @click.argument("name")
 @device_command
 def entity_get(name: str) -> None:
-    """Show all properties of object NAME (objnam or sname)."""
+    """Show object NAME (name or ID), including its raw controller attributes."""
 
     def render(d: Any) -> str:
-        head = output.kv(d.model_dump(exclude={"properties"}))
-        return head + "\n\n" + output.kv(dict(sorted(d.properties.items())), title="properties")
+        head = output.kv(
+            {
+                "Name": d.name,
+                "ID": d.id,
+                "Kind": d.kind,
+                "Type": d.type,
+                "State": _state_label(d.on),
+            }
+        )
+        raw = output.kv(dict(sorted(d.attributes.items())), title="Raw attributes")
+        return head + "\n\n" + raw
 
     run(lambda c: entities.get_object(c, name), render)
-
-
-# --------------------------------------------------------------------------- config
-
-
-@cli.group(cls=OrderedGroup)
-def config() -> None:
-    """Show and edit settings (file, env, defaults)."""
-
-
-@config.command("show")
-@json_option
-def config_show() -> None:
-    """Effective settings and where each value came from."""
-    loaded = load_or_fail()
-    data = {
-        "config_path": str(loaded.config_path),
-        "config_exists": loaded.config_exists,
-        "settings": loaded.settings.model_dump(),
-        "sources": loaded.sources,
-    }
-
-    def render(d: dict[str, Any]) -> str:
-        rows = {k: f"{output.fmt(v)}  [{d['sources'][k]}]" for k, v in d["settings"].items()}
-        exists = "" if d["config_exists"] else "  (not created; `pentair config init`)"
-        return output.kv(rows) + f"\n\nconfig file: {d['config_path']}{exists}"
-
-    emit(data, render)
-
-
-@config.command("path")
-@json_option
-def config_path() -> None:
-    """Print the settings file path in use."""
-    path = resolve_config_path(_state().config_path)
-    emit({"config_path": str(path), "exists": path.is_file()}, lambda d: d["config_path"])
-
-
-@config.command("init", epilog="\b\nExample:\n  pentair config init --host 10.0.0.144")
-@click.option("--host", "init_host", help="IntelliCenter host/IP to save.")
-@click.option("--port", "init_port", type=int, help="IntelliCenter port to save.")
-@click.option("--force", is_flag=True, help="Overwrite an existing file.")
-@json_option
-def config_init(init_host: str | None, init_port: int | None, force: bool) -> None:
-    """Create the settings file with defaults."""
-    path = resolve_config_path(_state().config_path)
-    if path.exists() and not force:
-        fail(f"{path} already exists (use --force, or `pentair config set`)", EXIT_CONFIG, "config")
-    values = Settings().model_dump()
-    if init_host:
-        values["host"] = init_host
-    if init_port:
-        values["port"] = init_port
-    try:
-        Settings(**values)
-    except Exception as e:  # noqa: BLE001
-        fail(str(e), EXIT_CONFIG, "config")
-    write_config_file(path, values)
-    emit(
-        {"ok": True, "config_path": str(path), "settings": values},
-        lambda d: f"Wrote {d['config_path']}",
-    )
-
-
-@config.command(
-    "set",
-    epilog=f"\b\nKeys: {', '.join(SETTING_KEYS)}\nExample:\n  pentair config set host 10.0.0.144",
-)
-@click.argument("key", type=click.Choice(SETTING_KEYS))
-@click.argument("value")
-@json_option
-def config_set(key: str, value: str) -> None:
-    """Save KEY=VALUE to the settings file."""
-    path = resolve_config_path(_state().config_path)
-    try:
-        coerced = set_config_value(path, key, value)
-    except ConfigError as e:
-        fail(str(e), EXIT_CONFIG, "config")
-    emit(
-        {"ok": True, "key": key, "value": coerced, "config_path": str(path)},
-        lambda d: f"{d['key']} = {output.fmt(d['value'])}  ({d['config_path']})",
-    )
-
-
-@config.command("unset")
-@click.argument("key", type=click.Choice(SETTING_KEYS))
-@json_option
-def config_unset(key: str) -> None:
-    """Remove KEY from the settings file (falls back to env/default)."""
-    path = resolve_config_path(_state().config_path)
-    try:
-        removed = unset_config_value(path, key)
-    except ConfigError as e:
-        fail(str(e), EXIT_CONFIG, "config")
-    emit(
-        {"ok": True, "key": key, "removed": removed},
-        lambda d: f"Removed {d['key']}" if d["removed"] else f"{d['key']} was not set",
-    )
 
 
 # --------------------------------------------------------------------------- skill
@@ -617,8 +556,8 @@ def skill_show() -> None:
 
 @skill.command(
     "install",
-    epilog="\b\nExamples:\n  pentair skill install                          # ~/.claude/skills\n"
-    "  pentair skill install --dest ./.claude/skills  # project-local",
+    epilog="\b\nExamples:\n  pentair-cli skill install                      # ~/.claude/skills\n"
+    "  pentair-cli skill install --dest ./.claude/skills  # project-local",
 )
 @click.option(
     "--dest",
@@ -648,24 +587,20 @@ def skill_install(dest: str | None, force: bool) -> None:
 @cli.command()
 @json_option
 def version() -> None:
-    """Detailed version info (CLI, Python, library, install path)."""
+    """CLI and controller-library versions."""
     import importlib.metadata as md
-    import platform
-
-    import pentair_cli
 
     try:
         lib = md.version("pyintellicenter")
     except md.PackageNotFoundError:  # pragma: no cover
         lib = None
-    data = {
-        "pentair_cli": __version__,
-        "pyintellicenter": lib,
-        "python": platform.python_version(),
-        "executable": sys.executable,
-        "package_path": str(pentair_cli.__path__[0]),
-    }
-    emit(data, output.kv)
+    data = {"pentair_cli": __version__, "pyintellicenter": lib}
+    emit(
+        data,
+        lambda d: output.kv(
+            {"pentair-cli": d["pentair_cli"], "pyintellicenter": d["pyintellicenter"]}
+        ),
+    )
 
 
 def _command_tree(cmd: click.Command, path: list[str]) -> list[dict[str, Any]]:
@@ -700,7 +635,7 @@ def _command_tree(cmd: click.Command, path: list[str]) -> list[dict[str, Any]]:
 @json_option
 def commands() -> None:
     """Every command with a one-line description."""
-    tree = _command_tree(cli, ["pentair"])
+    tree = _command_tree(cli, ["pentair-cli"])
 
     def render(rows: list[dict[str, Any]]) -> str:
         width = max(len(r["command"]) for r in rows)

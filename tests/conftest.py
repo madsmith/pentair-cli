@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from pyintellicenter import HeaterType
 
 from pentair_cli.config import ENV_PREFIX, SETTING_KEYS
 
@@ -51,9 +52,16 @@ class FakeController:
             obj("C0001", "Spa", subtype="SPA", status="ON"),
             obj("C0003", "Jets"),
             obj("C0015", "Cleaner"),
-            obj("X0043", "Cleaner"),
+            obj("X0043", "Cleaner", subtype="Generic"),
+            obj("_A111", "All Lights On", subtype="ALL", status="PERMIT"),
+            obj("C0016", "Step Light", subtype="LIGHT"),
+            obj("C0017", "Step Light", subtype="LIGHT"),
         ]
         self.lights = [obj("C0009", "Pool Lights", subtype="INTELLI")]
+        self.heaters = {"H0001": obj("H0001", "Gas Heater", "HEATER", "GENERIC", "ON")}
+        self.heat_modes = {"B1101": HeaterType.HEATER, "B1202": HeaterType.OFF}
+        self.body_heater = {"B1101": "H0001", "B1202": "H0001"}
+        self.heating = {"B1101": False, "B1202": False}
         self.temps = {"B1101": 56, "B1202": 78}
         self.setpoints = {"B1101": 55, "B1202": 72}
         self.calls: list[tuple] = []
@@ -82,7 +90,13 @@ class FakeController:
         return self.setpoints[o]
 
     def is_body_heating(self, o):
-        return False
+        return self.heating[o]
+
+    def get_body_heat_mode(self, o):
+        return self.heat_modes[o]
+
+    def get_heater_for_body(self, o):
+        return self.heaters.get(self.body_heater[o])
 
     def get_all_entities(self):
         return {"bodies": self.bodies, "circuits": self.circuits, "lights": self.lights}
