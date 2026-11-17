@@ -27,7 +27,7 @@ dev = [
 pentair-cli = "pentair_cli.__main__:main"
 
 [project.urls]
-Homepage = "https://github.com/yourorg/pentair-cli"
+Homepage = "https://github.com/madsmith/pentair-cli"
 
 [tool.uv]
 package = true

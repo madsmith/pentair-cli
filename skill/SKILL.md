@@ -1,6 +1,30 @@
 ---
 name: pentair
 description: Read and control a Pentair IntelliCenter pool/spa system with the `pentair-cli` command — water temperatures, heater setpoints, circuits (pumps, features), lights and color effects. Use when the user asks about the pool or spa, wants it heated, or wants lights/pumps/features switched.
+metadata:
+  {
+    "openclaw":
+      {
+        "emoji": "🏊",
+        "requires": {
+          "bins": ["pentair-cli"],
+          "env": [
+            "INTELLICENTER_HOST",
+            "INTELLICENTER_PORT"
+          ]
+        },
+        "install": [
+          {
+            "id": "uv",
+            "kind": "uv",
+            "package": "pentair-cli @ git+https://github.com/madsmith/pentair-cli",
+            "bins": ["pentair-cli"],
+            "label": "Install pentair-cli (uv)"
+          }
+        ],
+        "primaryEnv": "INTELLICENTER_HOST"
+      }
+  }
 ---
 
 # Pentair IntelliCenter CLI
