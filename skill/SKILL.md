@@ -21,8 +21,7 @@ metadata:
             "bins": ["pentair-cli"],
             "label": "Install pentair-cli (uv)"
           }
-        ],
-        "primaryEnv": "INTELLICENTER_HOST"
+        ]
       }
   }
 ---
