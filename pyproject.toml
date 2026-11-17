@@ -1,0 +1,86 @@
+[project]
+name = "pentair-cli"
+dynamic = ["version"]
+description = "Command line interface for Pentair IntelliCenter pool and spa control"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.13"
+authors = [
+    {name = "Admin"}
+]
+dependencies = [
+    "click>=8.1",
+    "pyintellicenter",
+    "pydantic>=2",
+    "loguru",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff",
+    "mypy",
+    "pytest",
+    "pytest-asyncio",
+]
+
+[project.scripts]
+pentair = "pentair_cli.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/yourorg/pentair-cli"
+
+[tool.uv]
+package = true
+managed = true
+
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pentair_cli"]
+
+# Ship the agent skill inside the wheel so `pentair skill install` works
+# from a `uv tool install`ed copy.
+[tool.hatch.build.targets.wheel.force-include]
+"skill" = "pentair_cli/_skill"
+
+[tool.hatch.version]
+source = "vcs"
+tag-pattern = "v(?P<version>.+)"
+fallback-version = "0.0.0"
+
+[tool.hatch.version.raw-options]
+version_scheme = "no-guess-dev"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/pentair_cli/_version.py"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-v --tb=short"
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.mypy]
+python_version = "3.13"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+
+[tool.coverage.run]
+source = ["src/pentair_cli"]
+omit = ["*/tests/*", "*/__main__*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if __name__ == .__main__.:",
+]

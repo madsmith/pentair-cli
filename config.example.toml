@@ -1,0 +1,10 @@
+# pentair-cli settings
+# Copy to ~/.config/pentair-cli/config.toml (or $XDG_CONFIG_HOME/pentair-cli/config.toml),
+# or run: pentair config init --host <ip>
+#
+# Precedence: CLI options > INTELLICENTER_* env vars > this file > defaults
+
+host = "127.0.0.1"
+port = 6681
+timeout = 10.0
+log_level = "WARNING"
